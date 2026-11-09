@@ -721,7 +721,7 @@ Authorization: &lt;secret&gt;</pre>
         <el-table :data="resendList">
           <el-table-column :min-width="emailColumnWidth" property="key" :label="$t('domain')"
                            :show-overflow-tooltip="true"/>
-          <el-table-column :width="tokenColumnWidth" property="value" label="Token" fixed="right"
+          <el-table-column :width="tokenColumnWidth" property="value" label="API Key" fixed="right"
                            :show-overflow-tooltip="true"/>
         </el-table>
       </el-dialog>
