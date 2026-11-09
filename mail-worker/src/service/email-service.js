@@ -636,24 +636,86 @@ const emailService = {
 		return emailResult;
 	},
 
-	// 附件已在 Resend 处理器中校验，批量接口为每位收件人构造独立邮件。
-	async sendBatchByResend(resendToken, params) {
-		const resend = new Resend(resendToken);
-		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
-			subject: params.subject,
-			text: params.text,
-			html: params.html
+	// Brevo 事务邮件接口（替代 Resend 通道）：一次调用发送一封，可带多个收件人。
+	async brevoSend(apiToken, params) {
+		const body = {
+			sender: {
+				email: params.accountEmail,
+				name: params.name || params.accountEmail
+			},
+			to: params.receiveEmail.map(address => ({ email: address })),
+			subject: params.subject || '(no subject)'
 		};
+
+		if (params.html) {
+			body.htmlContent = params.html;
+		}
+
+		if (params.text) {
+			body.textContent = params.text;
+		}
+
 		if (params.sendType === 'reply' && params.messageId) {
-			sendForm.headers = {
-				'in-reply-to': params.messageId,
-				'references': params.messageId
+			body.headers = {
+				'In-Reply-To': params.messageId,
+				'References': params.messageId
 			};
 		}
-		return resend.batch.send(params.receiveEmail.map(address => ({
-			...sendForm, to: [address]
-		})), { batchValidation: 'strict' });
+
+		const attachments = await this.toResendAttachments(params.attachments);
+		if (attachments.length > 0) {
+			body.attachment = attachments.map(item => ({
+				name: item.filename || item.name || 'attachment',
+				content: item.content
+			}));
+		}
+
+		const response = await fetch('https://api.brevo.com/v3/smtp/email', {
+			method: 'POST',
+			headers: {
+				'api-key': apiToken,
+				'content-type': 'application/json',
+				'accept': 'application/json'
+			},
+			body: JSON.stringify(body)
+		});
+
+		let result = null;
+		try {
+			result = await response.json();
+		} catch (error) {
+			result = null;
+		}
+
+		if (!response.ok) {
+			return {
+				error: {
+					message: result?.message || `Brevo send failed (HTTP ${response.status})`
+				}
+			};
+		}
+
+		return { data: { id: result?.messageId } };
+	},
+
+	// Brevo 无批量接口，按收件人逐封发送，返回顺序与提交顺序一致。
+	async sendBatchByResend(resendToken, params) {
+		const ids = [];
+
+		for (const address of params.receiveEmail) {
+			const result = await this.brevoSend(resendToken, {
+				...params,
+				receiveEmail: [address]
+			});
+
+			if (result.error) {
+				return { error: result.error };
+			}
+
+			ids.push({ id: result.data.id });
+		}
+
+		return { data: { data: ids } };
 	},
 
 	async sendByCloudflareEmail(c, params) {
@@ -693,25 +755,7 @@ const emailService = {
 	},
 
 	async sendByResend(resendToken, params) {
-		const resend = new Resend(resendToken);
-
-		const sendForm = {
-			from: `${params.name} <${params.accountEmail}>`,
-			to: [...params.receiveEmail],
-			subject: params.subject,
-			text: params.text,
-			html: params.html,
-			attachments: await this.toResendAttachments(params.attachments)
-		};
-
-		if (params.sendType === 'reply') {
-			sendForm.headers = {
-				'in-reply-to': params.messageId,
-				'references': params.messageId
-			};
-		}
-
-		return await resend.emails.send(sendForm);
+		return await this.brevoSend(resendToken, params);
 	},
 
 	async toCloudflareAttachments(attachments) {
